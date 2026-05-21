@@ -1,0 +1,52 @@
+---
+import AppShell from "../components/AppShell.tsx";
+---
+
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analizador de Semanas Pensionales · Colpensiones</title>
+    <style>
+      @import "tailwindcss";
+    </style>
+  </head>
+  <body class="min-h-screen bg-gray-50 text-gray-900">
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-6 py-4">
+      <div class="max-w-5xl mx-auto flex items-center gap-3">
+        <div class="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 11h.01M12 11h.01M15 11h.01M4 19h16a2 2 0 002-2V7a2 2 0 00-2-2H4a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-gray-900 leading-tight">Semanas Pensionales</h1>
+          <p class="text-xs text-gray-500">Recálculo por días calendario real · Colpensiones</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main class="max-w-5xl mx-auto px-6 py-10">
+      <!-- Intro -->
+      <div class="mb-8">
+        <h2 class="text-2xl font-bold text-gray-900">Análisis de historia laboral</h2>
+        <p class="text-gray-600 mt-2 max-w-2xl">
+          Cargue el PDF de historia laboral de Colpensiones para recalcular las semanas cotizadas
+          usando días calendario reales en lugar del criterio estándar de 30 días por mes.
+        </p>
+      </div>
+
+      <!-- App -->
+      <AppShell client:load />
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-20 border-t border-gray-200 py-6 px-6 text-center text-xs text-gray-400">
+      Herramienta de apoyo jurídico · Los resultados son orientativos y deben validarse con el expediente original.
+    </footer>
+  </body>
+</html>
