@@ -13,9 +13,9 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
-    optimizeDeps: {
-      exclude: ['sharp']
-    }
+    ssr: {
+      external: ['mupdf', 'sharp', 'tesseract.js'],
+    },
   },
 
   adapter: vercel()
