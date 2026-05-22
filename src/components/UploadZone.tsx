@@ -6,18 +6,32 @@ interface Props {
   onError: (msg: string) => void;
 }
 
-type Estado = "idle" | "dragover" | "loading" | "done";
+type Estado = "idle" | "dragover" | "extracting" | "analyzing" | "done";
 
-const PASOS = [
-  "Extrayendo páginas del PDF…",
-  "Reconociendo texto (OCR)…",
-  "Analizando registros…",
-  "Calculando semanas reales…",
-];
+async function extractTextFromPdfBrowser(file: File): Promise<string> {
+  const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
+
+  // Use legacy build (no worker needed — avoids worker config complexity)
+  GlobalWorkerOptions.workerSrc = "";
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await getDocument({ data: arrayBuffer, useWorkerFetch: false, isEvalSupported: false }).promise;
+
+  const pages: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item: any) => ("str" in item ? item.str : ""))
+      .join(" ");
+    pages.push(pageText);
+  }
+
+  return pages.join("\n--- PAGE BREAK ---\n");
+}
 
 export default function UploadZone({ onResult, onError }: Props) {
   const [estado, setEstado] = useState<Estado>("idle");
-  const [paso, setPaso] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const procesarArchivo = useCallback(
@@ -31,20 +45,18 @@ export default function UploadZone({ onResult, onError }: Props) {
         return;
       }
 
-      setEstado("loading");
-      setPaso(0);
-
-      // Simulate step progression while waiting
-      const interval = setInterval(() => {
-        setPaso((p) => Math.min(p + 1, PASOS.length - 1));
-      }, 4000);
-
       try {
-        const form = new FormData();
-        form.append("pdf", file);
+        // Step 1: extract text in the browser
+        setEstado("extracting");
+        const text = await extractTextFromPdfBrowser(file);
 
-        const res = await fetch("/api/process", { method: "POST", body: form });
-        clearInterval(interval);
+        // Step 2: send text to API
+        setEstado("analyzing");
+        const res = await fetch("/api/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
 
         const json = await res.json();
 
@@ -57,8 +69,7 @@ export default function UploadZone({ onResult, onError }: Props) {
         setEstado("done");
         onResult(json as AnalysisResult);
       } catch (e: any) {
-        clearInterval(interval);
-        onError(e?.message ?? "Error de red.");
+        onError(e?.message ?? "Error al leer el PDF.");
         setEstado("idle");
       }
     },
@@ -83,21 +94,31 @@ export default function UploadZone({ onResult, onError }: Props) {
     [procesarArchivo]
   );
 
-  if (estado === "loading") {
+  if (estado === "extracting" || estado === "analyzing") {
     return (
       <div className="flex flex-col items-center justify-center gap-6 py-16">
         <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         <div className="text-center">
-          <p className="text-lg font-semibold text-gray-800">{PASOS[paso]}</p>
-          <p className="text-sm text-gray-500 mt-1">Esto puede tomar 1–3 minutos según el tamaño del PDF.</p>
+          <p className="text-lg font-semibold text-gray-800">
+            {estado === "extracting" ? "Leyendo PDF…" : "Calculando semanas reales…"}
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            {estado === "extracting"
+              ? "Extrayendo texto del documento."
+              : "Analizando registros de cotización."}
+          </p>
         </div>
         <div className="flex gap-2">
-          {PASOS.map((_, i) => (
-            <div
-              key={i}
-              className={`h-2 w-8 rounded-full transition-all ${i <= paso ? "bg-blue-600" : "bg-gray-200"}`}
-            />
-          ))}
+          {["Leyendo PDF", "Calculando"].map((label, i) => {
+            const active = i === 0 ? estado === "extracting" : estado === "analyzing";
+            const done = i === 0 && estado === "analyzing";
+            return (
+              <div key={label} className="flex flex-col items-center gap-1">
+                <div className={`h-2 w-16 rounded-full transition-all ${done ? "bg-blue-600" : active ? "bg-blue-400 animate-pulse" : "bg-gray-200"}`} />
+                <span className="text-xs text-gray-400">{label}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
