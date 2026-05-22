@@ -1,4 +1,5 @@
 import type { APIRoute } from "astro";
+import { extractTextFromPdf, isUsableText } from "../../lib/pdf-to-text.ts";
 import { pdfToImages } from "../../lib/pdf-to-images.ts";
 import { ocrImages } from "../../lib/ocr.ts";
 import { parseOcrText } from "../../lib/parser.ts";
@@ -26,20 +27,24 @@ export const POST: APIRoute = async ({ request }) => {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Step 1: PDF → images
-    const images = await pdfToImages(buffer);
+    // Step 1: try direct text extraction (fast path — digital PDFs)
+    let ocrText = extractTextFromPdf(buffer);
+    let method = "text";
 
-    if (images.length === 0) {
-      return new Response(JSON.stringify({ error: "No se pudieron extraer páginas del PDF." }), {
-        status: 422,
-        headers: { "Content-Type": "application/json" },
-      });
+    if (!isUsableText(ocrText)) {
+      // Fallback: OCR for scanned PDFs
+      const images = await pdfToImages(buffer);
+      if (images.length === 0) {
+        return new Response(JSON.stringify({ error: "No se pudieron extraer páginas del PDF." }), {
+          status: 422,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      ocrText = await ocrImages(images);
+      method = "ocr";
     }
 
-    // Step 2: OCR
-    const ocrText = await ocrImages(images);
-
-    // Step 3: Parse
+    // Step 2: Parse
     const rawRecords = parseOcrText(ocrText);
 
     if (rawRecords.length === 0) {
@@ -52,10 +57,10 @@ export const POST: APIRoute = async ({ request }) => {
       );
     }
 
-    // Step 4: Calculate
+    // Step 3: Calculate
     const result = calcular(rawRecords);
 
-    return new Response(JSON.stringify(result), {
+    return new Response(JSON.stringify({ ...result, method }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

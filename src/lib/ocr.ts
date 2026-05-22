@@ -1,25 +1,25 @@
 import Tesseract from "tesseract.js";
 
-export async function ocrImages(imageBuffers: Buffer[]): Promise<string> {
-  const worker = await Tesseract.createWorker("spa", 1, {
-    logger: () => {},
-  });
-
-  // PSM.AUTO gives better row-level output for Colpensiones tables
-  // (PSM.SPARSE_TEXT fragments each cell into its own line)
+async function ocrPage(buf: Buffer): Promise<string> {
+  const worker = await Tesseract.createWorker("spa", 1, { logger: () => {} });
   await worker.setParameters({
     tessedit_pageseg_mode: Tesseract.PSM.AUTO,
     preserve_interword_spaces: "1",
   });
+  const { data } = await worker.recognize(buf);
+  await worker.terminate();
+  return data.text;
+}
 
-  const pages: string[] = [];
+export async function ocrImages(imageBuffers: Buffer[]): Promise<string> {
+  const CONCURRENCY = 3;
+  const results: string[] = new Array(imageBuffers.length);
 
-  for (const buf of imageBuffers) {
-    const { data } = await worker.recognize(buf);
-    pages.push(data.text);
+  for (let i = 0; i < imageBuffers.length; i += CONCURRENCY) {
+    const batch = imageBuffers.slice(i, i + CONCURRENCY);
+    const texts = await Promise.all(batch.map(ocrPage));
+    texts.forEach((t, j) => { results[i + j] = t; });
   }
 
-  await worker.terminate();
-
-  return pages.join("\n--- PAGE BREAK ---\n");
+  return results.join("\n--- PAGE BREAK ---\n");
 }
