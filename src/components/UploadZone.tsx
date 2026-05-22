@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import type { AnalysisResult } from "../lib/types.ts";
+// @ts-ignore — Vite resolves ?url at build time
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 interface Props {
   onResult: (result: AnalysisResult) => void;
@@ -10,12 +12,10 @@ type Estado = "idle" | "dragover" | "extracting" | "analyzing" | "done";
 
 async function extractTextFromPdfBrowser(file: File): Promise<string> {
   const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
-
-  // Use legacy build (no worker needed — avoids worker config complexity)
-  GlobalWorkerOptions.workerSrc = "";
+  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: arrayBuffer, useWorkerFetch: false, isEvalSupported: false }).promise;
+  const pdf = await getDocument({ data: arrayBuffer }).promise;
 
   const pages: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
