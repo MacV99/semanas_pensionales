@@ -6,43 +6,33 @@ export const POST: APIRoute = async ({ request }) => {
   try {
     const contentType = request.headers.get("content-type") ?? "";
 
-    let text: string;
-
-    if (contentType.includes("application/json")) {
-      // New path: client-side text extraction
-      const body = await request.json();
-      if (!body?.text || typeof body.text !== "string") {
-        return new Response(JSON.stringify({ error: "No se recibió texto del PDF." }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      text = body.text;
-    } else {
+    if (!contentType.includes("application/json")) {
       return new Response(
         JSON.stringify({ error: "Content-Type no soportado. Use application/json." }),
         { status: 415, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    // Parse
-    const rawRecords = parseOcrText(text);
+    const body = await request.json();
+    if (!body?.text || typeof body.text !== "string") {
+      return new Response(
+        JSON.stringify({ error: "No se recibió texto del PDF." }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    const rawRecords = parseOcrText(body.text);
 
     if (rawRecords.length === 0) {
       return new Response(
         JSON.stringify({
-          error:
-            "No se encontraron registros de cotización en el PDF. Verifique que el documento sea una historia laboral de Colpensiones.",
-          textPreview: text.slice(0, 500),
+          error: "No se encontraron registros de cotización en el PDF. Verifique que el documento sea una historia laboral de Colpensiones.",
         }),
         { status: 422, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    // Calculate
-    const result = calcular(rawRecords);
-
-    return new Response(JSON.stringify(result), {
+    return new Response(JSON.stringify(calcular(rawRecords)), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

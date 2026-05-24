@@ -3,6 +3,11 @@ import type { AnalysisResult } from "../lib/types.ts";
 // @ts-ignore — Vite resolves ?url at build time
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
+// Set once at module load — avoids repeated global mutation on every call
+import("pdfjs-dist").then(({ GlobalWorkerOptions }) => {
+  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+});
+
 interface Props {
   onResult: (result: AnalysisResult) => void;
   onError: (msg: string) => void;
@@ -10,55 +15,57 @@ interface Props {
 
 type Estado = "idle" | "dragover" | "loading" | "done";
 
+interface Progreso {
+  pagina: number;
+  total: number;
+  calculando: boolean;
+}
+
 async function pdfToTexto(
   file: File,
   onProgress: (pagina: number, total: number) => void
 ): Promise<string> {
-  // 1. Cargar PDF
-  const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
-  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  const [{ getDocument }, { createWorker, PSM }] = await Promise.all([
+    import("pdfjs-dist"),
+    import("tesseract.js"),
+  ]);
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await getDocument({
-    data: arrayBuffer,
-    wasmUrl: "/pdfjs-wasm/",
-  }).promise;
+  const pdf = await getDocument({ data: arrayBuffer, wasmUrl: "/pdfjs-wasm/" }).promise;
   const total = pdf.numPages;
 
-  // 2. Cargar Tesseract
-  const { createWorker } = await import("tesseract.js");
   const tessWorker = await createWorker("spa", 1, { logger: () => {} });
   await tessWorker.setParameters({
-    tessedit_pageseg_mode: "1" as any,
+    tessedit_pageseg_mode: PSM.AUTO,
     preserve_interword_spaces: "1",
   });
 
   const pages: string[] = [];
+  // Reuse a single canvas across pages to avoid repeated large-buffer allocation
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
 
-  for (let i = 1; i <= total; i++) {
-    onProgress(i, total);
-
-    // Renderizar página a canvas
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2.5 });
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext("2d")!;
-    await page.render({ canvasContext: ctx, viewport }).promise;
-
-    // OCR en el canvas
-    const { data } = await tessWorker.recognize(canvas);
-    pages.push(data.text);
+  try {
+    for (let i = 1; i <= total; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2.0 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const { data } = await tessWorker.recognize(canvas);
+      pages.push(data.text);
+      onProgress(i, total); // fire after page is done, not before
+    }
+  } finally {
+    await tessWorker.terminate();
   }
 
-  await tessWorker.terminate();
   return pages.join("\n--- PAGE BREAK ---\n");
 }
 
 export default function UploadZone({ onResult, onError }: Props) {
   const [estado, setEstado] = useState<Estado>("idle");
-  const [progreso, setProgreso] = useState({ pagina: 0, total: 0, fase: "" });
+  const [progreso, setProgreso] = useState<Progreso>({ pagina: 0, total: 0, calculando: false });
   const inputRef = useRef<HTMLInputElement>(null);
 
   const procesarArchivo = useCallback(
@@ -73,16 +80,15 @@ export default function UploadZone({ onResult, onError }: Props) {
       }
 
       setEstado("loading");
-      setProgreso({ pagina: 0, total: 0, fase: "Iniciando…" });
+      setProgreso({ pagina: 0, total: 0, calculando: false });
 
       try {
-        // OCR en el browser
         const text = await pdfToTexto(file, (pagina, total) => {
-          setProgreso({ pagina, total, fase: `Reconociendo página ${pagina} de ${total}…` });
+          setProgreso({ pagina, total, calculando: false });
         });
 
-        // Enviar texto al API
-        setProgreso({ pagina: 0, total: 0, fase: "Calculando semanas reales…" });
+        setProgreso((p) => ({ ...p, calculando: true }));
+
         const res = await fetch("/api/process", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -126,31 +132,32 @@ export default function UploadZone({ onResult, onError }: Props) {
   );
 
   if (estado === "loading") {
-    const { pagina, total, fase } = progreso;
-    const pct = total > 0 ? Math.round((pagina / total) * 100) : null;
+    const { pagina, total, calculando } = progreso;
+    const pct = calculando ? 100 : total > 0 ? Math.round((pagina / total) * 100) : 0;
+    const fase = calculando
+      ? "Calculando semanas reales…"
+      : total > 0
+      ? `Reconociendo página ${pagina} de ${total}…`
+      : "Iniciando…";
 
     return (
       <div className="flex flex-col items-center justify-center gap-6 py-16">
         <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         <div className="text-center">
           <p className="text-lg font-semibold text-gray-800">{fase}</p>
-          {pct !== null && (
-            <p className="text-sm text-gray-500 mt-1">
-              Esto puede tomar varios minutos según el tamaño del PDF.
-            </p>
-          )}
+          <p className="text-sm text-gray-500 mt-1">
+            Esto puede tomar varios minutos según el tamaño del PDF.
+          </p>
         </div>
-        {pct !== null && (
-          <div className="w-64">
-            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-2 bg-blue-600 rounded-full transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <p className="text-xs text-gray-400 text-center mt-1">{pct}%</p>
+        <div className="w-64">
+          <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div
+              className="h-2 bg-blue-600 rounded-full transition-all duration-300"
+              style={{ width: `${pct}%` }}
+            />
           </div>
-        )}
+          <p className="text-xs text-gray-400 text-center mt-1">{pct}%</p>
+        </div>
       </div>
     );
   }
