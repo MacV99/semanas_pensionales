@@ -8,30 +8,57 @@ interface Props {
   onError: (msg: string) => void;
 }
 
-type Estado = "idle" | "dragover" | "extracting" | "analyzing" | "done";
+type Estado = "idle" | "dragover" | "loading" | "done";
 
-async function extractTextFromPdfBrowser(file: File): Promise<string> {
+async function pdfToTexto(
+  file: File,
+  onProgress: (pagina: number, total: number) => void
+): Promise<string> {
+  // 1. Cargar PDF
   const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
   GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: arrayBuffer }).promise;
+  const pdf = await getDocument({
+    data: arrayBuffer,
+    wasmUrl: "/pdfjs-wasm/",
+  }).promise;
+  const total = pdf.numPages;
+
+  // 2. Cargar Tesseract
+  const { createWorker } = await import("tesseract.js");
+  const tessWorker = await createWorker("spa", 1, { logger: () => {} });
+  await tessWorker.setParameters({
+    tessedit_pageseg_mode: "1" as any,
+    preserve_interword_spaces: "1",
+  });
 
   const pages: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
+
+  for (let i = 1; i <= total; i++) {
+    onProgress(i, total);
+
+    // Renderizar página a canvas
     const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item: any) => ("str" in item ? item.str : ""))
-      .join(" ");
-    pages.push(pageText);
+    const viewport = page.getViewport({ scale: 2.5 });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d")!;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    // OCR en el canvas
+    const { data } = await tessWorker.recognize(canvas);
+    pages.push(data.text);
   }
 
+  await tessWorker.terminate();
   return pages.join("\n--- PAGE BREAK ---\n");
 }
 
 export default function UploadZone({ onResult, onError }: Props) {
   const [estado, setEstado] = useState<Estado>("idle");
+  const [progreso, setProgreso] = useState({ pagina: 0, total: 0, fase: "" });
   const inputRef = useRef<HTMLInputElement>(null);
 
   const procesarArchivo = useCallback(
@@ -45,13 +72,17 @@ export default function UploadZone({ onResult, onError }: Props) {
         return;
       }
 
-      try {
-        // Step 1: extract text in the browser
-        setEstado("extracting");
-        const text = await extractTextFromPdfBrowser(file);
+      setEstado("loading");
+      setProgreso({ pagina: 0, total: 0, fase: "Iniciando…" });
 
-        // Step 2: send text to API
-        setEstado("analyzing");
+      try {
+        // OCR en el browser
+        const text = await pdfToTexto(file, (pagina, total) => {
+          setProgreso({ pagina, total, fase: `Reconociendo página ${pagina} de ${total}…` });
+        });
+
+        // Enviar texto al API
+        setProgreso({ pagina: 0, total: 0, fase: "Calculando semanas reales…" });
         const res = await fetch("/api/process", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -69,7 +100,7 @@ export default function UploadZone({ onResult, onError }: Props) {
         setEstado("done");
         onResult(json as AnalysisResult);
       } catch (e: any) {
-        onError(e?.message ?? "Error al leer el PDF.");
+        onError(e?.message ?? "Error al procesar el PDF.");
         setEstado("idle");
       }
     },
@@ -94,32 +125,32 @@ export default function UploadZone({ onResult, onError }: Props) {
     [procesarArchivo]
   );
 
-  if (estado === "extracting" || estado === "analyzing") {
+  if (estado === "loading") {
+    const { pagina, total, fase } = progreso;
+    const pct = total > 0 ? Math.round((pagina / total) * 100) : null;
+
     return (
       <div className="flex flex-col items-center justify-center gap-6 py-16">
         <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
         <div className="text-center">
-          <p className="text-lg font-semibold text-gray-800">
-            {estado === "extracting" ? "Leyendo PDF…" : "Calculando semanas reales…"}
-          </p>
-          <p className="text-sm text-gray-500 mt-1">
-            {estado === "extracting"
-              ? "Extrayendo texto del documento."
-              : "Analizando registros de cotización."}
-          </p>
+          <p className="text-lg font-semibold text-gray-800">{fase}</p>
+          {pct !== null && (
+            <p className="text-sm text-gray-500 mt-1">
+              Esto puede tomar varios minutos según el tamaño del PDF.
+            </p>
+          )}
         </div>
-        <div className="flex gap-2">
-          {["Leyendo PDF", "Calculando"].map((label, i) => {
-            const active = i === 0 ? estado === "extracting" : estado === "analyzing";
-            const done = i === 0 && estado === "analyzing";
-            return (
-              <div key={label} className="flex flex-col items-center gap-1">
-                <div className={`h-2 w-16 rounded-full transition-all ${done ? "bg-blue-600" : active ? "bg-blue-400 animate-pulse" : "bg-gray-200"}`} />
-                <span className="text-xs text-gray-400">{label}</span>
-              </div>
-            );
-          })}
-        </div>
+        {pct !== null && (
+          <div className="w-64">
+            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className="h-2 bg-blue-600 rounded-full transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <p className="text-xs text-gray-400 text-center mt-1">{pct}%</p>
+          </div>
+        )}
       </div>
     );
   }
